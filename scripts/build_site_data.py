@@ -209,7 +209,7 @@ def main():
         raise SystemExit(f"no day has {MIN_COVERAGE:.0%} of the weight covered yet")
 
     payload = {
-        "generated": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "generated": pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M"),
         "composite": {
             "title": "大盤綜合指標",
             "description": DESCRIPTIONS["大盤綜合指標"],
