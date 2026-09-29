@@ -16,6 +16,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import date, timedelta
 
 import pandas as pd
@@ -200,7 +201,9 @@ REQUIRED = {
 def fetch_day(sess, throttle, feed, d):
     path, extra, _ = FEEDS[feed]
     url = f"{BASE}/{path}?date={d:%Y%m%d}&{extra}&response=json"
-    for _ in range(5):
+    tries = pauses = 0
+    while tries < 5:
+        tries += 1
         throttle.wait()
         try:
             r = sess.get(url, timeout=90)
@@ -223,6 +226,18 @@ def fetch_day(sess, throttle, feed, d):
             print(f"    {d} {feed}: non-JSON reply, backing off to "
                   f"{iv:.1f}s", flush=True)
             continue
+        stat = str(payload.get("stat") or "")
+        if "暫停" in stat:
+            # "每日1:30PM到1:45PM為網站尖峰時間，查詢全部資料功能暫停使用!" --
+            # TWSE switches off the ALL queries for a quarter hour every day.
+            # Not a closed market: wait it out without spending a retry.
+            if pauses < 12:
+                pauses += 1
+                tries -= 1
+                print(f"    {d} {feed}: TWSE peak-hour pause, waiting 90s", flush=True)
+                time.sleep(90)
+                continue
+            return None
         if payload.get("stat") not in ("OK", None):
             # market closed, or before this feed starts -- genuinely no data,
             # as opposed to a truncated reply. Recorded separately so the

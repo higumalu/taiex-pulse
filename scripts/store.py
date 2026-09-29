@@ -109,12 +109,12 @@ def twse_aggregates(prices, breadth, margin_stock, margin_total, pbr, shares,
     if len(breadth):
         parts.append(breadth.drop_duplicates("date", keep="last")
                      .set_index("date")[["up", "down", "unchanged"]])
-    sp = prices if stack_prices is None else stack_prices
-    if len(sp):
-        counts = I.stack_counts(sp)
-        if len(prices):
-            counts = counts.loc[counts.index.isin(prices["date"])]
-        parts.append(counts)
+    if len(prices):
+        # Counts only for the days in `prices`: the rest of stack_prices is
+        # history for the moving averages, and its oldest days have too little
+        # of it to produce a count at all.
+        counts = I.stack_counts(prices if stack_prices is None else stack_prices)
+        parts.append(counts.loc[counts.index.isin(prices["date"])])
     if len(prices):
         etf = prices[prices["code"] == "0050"].drop_duplicates("date")
         parts.append(etf.set_index("date")["close"].rename("close_0050").to_frame())
