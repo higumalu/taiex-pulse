@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>台股大盤綜合指標 · taiex-pulse</title>
+<!-- vendored so the page works offline and cannot break on a CDN path change -->
+<script src="vendor/echarts.min.js"></script>
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#f6f7f9; --card:#fff; --ink:#1b1d21; --muted:#6b7280; --line:#e3e6ea;
+    --up:#ce0743; --down:#00cc88; --warn:#ffcc00; --accent:#2b5fd9;
+    --pad: 16px;
+  }
+  :root:not([data-theme="light"]){ }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --bg:#14161a; --card:#1c1f25; --ink:#e8eaed; --muted:#9aa2ad; --line:#2c313a;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#14161a; --card:#1c1f25; --ink:#e8eaed; --muted:#9aa2ad; --line:#2c313a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.6 "Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  }
+  .wrap{max-width:1040px; margin:0 auto; padding-inline:var(--pad); padding-block:28px 64px}
+  header h1{font-size:clamp(22px,4vw,30px); margin:0 0 6px; letter-spacing:-.01em}
+  .sub{color:var(--muted); margin:0 0 20px}
+  .notice{
+    background:var(--card); border:1px solid var(--line); border-left:3px solid var(--warn);
+    border-radius:8px; padding:14px 16px; margin-bottom:24px; color:var(--muted);
+  }
+  .notice strong{color:var(--ink)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:18px var(--pad); margin-bottom:18px;
+  }
+  .card h2{font-size:17px; margin:0; display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .badge{
+    font-size:11px; font-weight:600; padding:2px 8px; border-radius:99px;
+    border:1px solid var(--line); color:var(--muted); white-space:nowrap;
+  }
+  .desc{color:var(--muted); margin:10px 0 4px; font-size:13px}
+  .chart{width:100%; height:300px}
+  .gauge{width:100%; height:260px}
+  .score{display:flex; gap:24px; align-items:center; flex-wrap:wrap}
+  .score .g{flex:0 0 260px; max-width:100%}
+  .score .t{flex:1 1 300px; min-width:0}
+  .legend{display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px}
+  .dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px}
+  footer{color:var(--muted); font-size:12px; margin-top:32px; border-top:1px solid var(--line); padding-top:16px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>台股大盤綜合指標</h1>
+    <p class="sub" id="sub">載入中…</p>
+  </header>
+
+  <div class="notice" id="notice"></div>
+
+  <div class="card">
+    <h2>大盤綜合指標 <span class="badge" id="compBadge"></span></h2>
+    <div class="score">
+      <div class="g"><div class="gauge" id="gauge"></div></div>
+      <div class="t">
+        <p class="desc" id="compDesc"></p>
+        <div class="legend">
+          <span><i class="dot" style="background:#00cc88"></i>0–4 風險偏高</span>
+          <span><i class="dot" style="background:#ffcc00"></i>4–6 中性</span>
+          <span><i class="dot" style="background:#ce0743"></i>6–10 偏多</span>
+        </div>
+      </div>
+    </div>
+    <div class="chart" id="compChart" style="height:260px"></div>
+  </div>
+
+  <div id="cards"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const UP = '#ce0743', DOWN = '#00cc88', WARN = '#ffcc00';
+const charts = [];
+
+function themeColors(){
+  const css = getComputedStyle(document.documentElement);
+  return {
+    ink: css.getPropertyValue('--ink').trim(),
+    muted: css.getPropertyValue('--muted').trim(),
+    line: css.getPropertyValue('--line').trim(),
+  };
+}
+
+// Piecewise colouring: values below the first threshold are "cheap/oversold"
+// green, above the last are red. Taiwan convention -- red is up, not danger.
+function pieces(thresholds){
+  if(!thresholds || !thresholds.length) return [];
+  const palette = thresholds.length === 1 ? [DOWN, UP]
+                : thresholds.length === 2 ? [DOWN, WARN, UP]
+                : ['#4a7fd4', WARN, DOWN, '#e08bb0', UP];
+  const out = [];
+  let lo = -1e9;
+  thresholds.forEach((t, i) => { out.push({gt: lo, lte: t, color: palette[i]}); lo = t; });
+  out.push({gt: lo, lte: 1e9, color: palette[thresholds.length]});
+  return out;
+}
+
+function lineOption(s, c){
+  const hasBench = s.benchmark && s.benchmark.some(v => v !== null);
+  const shared = !!s.same_axis;          // draw benchmark on the indicator's own axis
+  const benchAxis = shared ? 0 : 1;
+  return {
+    animation: false,
+    grid: {left: 58, right: (hasBench && !shared) ? 64 : 20, top: 34, bottom: 46},
+    tooltip: {trigger: 'axis'},
+    legend: {show: true, top: 0, right: 0, textStyle: {color: c.muted, fontSize: 11},
+             data: hasBench ? [s.title, '加權指數'] : [s.title]},
+    xAxis: {type: 'category', data: s.index, axisLabel: {color: c.muted, fontSize: 11},
+            axisLine: {lineStyle: {color: c.line}}},
+    yAxis: [
+      {type: 'value', scale: true, axisLabel: {color: c.muted, fontSize: 11},
+       splitLine: {lineStyle: {color: c.line}}},
+      {type: 'value', scale: true, show: hasBench && !shared,
+       axisLabel: {color: c.muted, fontSize: 11}, splitLine: {show: false}}
+    ],
+    visualMap: s.thresholds && s.thresholds.length
+      ? [{show: false, seriesIndex: 0, pieces: pieces(s.thresholds)}] : undefined,
+    dataZoom: [
+      {type: 'inside', start: 70, end: 100},
+      {type: 'slider', start: 70, end: 100, height: 18, bottom: 8,
+       borderColor: c.line, textStyle: {color: c.muted, fontSize: 10}}
+    ],
+    series: [
+      {name: s.title, type: 'line', data: s.ind, showSymbol: false,
+       lineStyle: {width: 1.6}, connectNulls: true},
+      ...(hasBench ? [{name: '加權指數', type: 'line', yAxisIndex: benchAxis, data: s.benchmark,
+                       showSymbol: false, connectNulls: true,
+                       lineStyle: {width: 1, color: c.muted, opacity: .55}}] : [])
+    ]
+  };
+}
+
+function gaugeOption(value, c){
+  return {
+    animation: false,
+    series: [{
+      type: 'gauge', min: 0, max: 10, radius: '92%', center: ['50%', '58%'],
+      axisLine: {lineStyle: {width: 10, color: [[.4, DOWN], [.6, WARN], [1, UP]]}},
+      pointer: {itemStyle: {color: 'auto'}},
+      axisTick: {distance: -26, length: 6, lineStyle: {color: '#fff', width: 2}},
+      splitLine: {distance: -26, length: 26, lineStyle: {color: '#fff', width: 3}},
+      axisLabel: {color: 'auto', distance: 14, fontSize: 12},
+      detail: {valueAnimation: false, formatter: '{value} / 10', color: 'auto',
+               fontSize: 22, offset: [0, '34%']},
+      data: [{value: value}]
+    }]
+  };
+}
+
+function mount(el, option){
+  const chart = echarts.init(el);
+  chart.setOption(option);
+  charts.push(chart);
+  return chart;
+}
+
+fetch('data/market.json').then(r => r.json()).then(d => {
+  const c = themeColors();
+  const comp = d.composite;
+  const last = comp.ind[comp.ind.length - 1];
+  const lastDate = comp.index[comp.index.length - 1];
+
+  document.getElementById('sub').textContent =
+    `最新 ${lastDate}　加權指數 ${comp.benchmark[comp.benchmark.length - 1]?.toLocaleString()}　` +
+    `資料產出於 ${d.generated}`;
+
+  const pct = Math.round(100 * comp.weight_covered / comp.weight_total);
+  document.getElementById('notice').innerHTML =
+    '<strong>所有指標都由本專案從公開資料自行計算。</strong>' +
+    ' 資料來自證交所、櫃買中心、期交所與國發會；資料還不夠長的指標暫不顯示。' +
+    (comp.missing.length
+      ? ` 目前缺少：${comp.missing.join('、')}，綜合指標以其餘 ${pct}% 的權重換算。`
+      : '');
+
+  document.getElementById('compBadge').textContent = `權重涵蓋 ${pct}%`;
+  document.getElementById('compDesc').textContent = comp.description;
+  mount(document.getElementById('gauge'), gaugeOption(last, c));
+  mount(document.getElementById('compChart'),
+        lineOption({...comp, thresholds: [4, 6]}, c));
+
+  const cards = document.getElementById('cards');
+  d.series.forEach((s, i) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML =
+      `<h2>${s.title}` +
+      (s.weight ? `<span class="badge">權重 ${s.weight}</span>` : '') + '</h2>' +
+      `<p class="desc">${s.description}</p><div class="chart" id="ch${i}"></div>`;
+    cards.appendChild(card);
+    mount(card.querySelector('.chart'), lineOption(s, c));
+  });
+
+  document.getElementById('foot').innerHTML =
+    '資料來源：臺灣證券交易所、證券櫃檯買賣中心、臺灣期貨交易所、國家發展委員會。' +
+    '指標構想參考自 FinLab 的「台股大盤綜合指標」頁面，計算與說明文字皆為本專案獨立實作，' +
+    '與原站數值可能有差異。僅供參考，不構成投資建議。';
+}).catch(e => {
+  document.getElementById('sub').textContent = '載入 data/market.json 失敗：' + e.message;
+});
+
+addEventListener('resize', () => charts.forEach(ch => ch.resize()));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => location.reload());
+</script>
+</body>
+</html>

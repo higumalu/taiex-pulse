@@ -1,0 +1,22 @@
+{
+  "STACK_MAS": [
+    3,
+    10,
+    40
+  ],
+  "STACK_SIGNAL_MAS": [
+    3,
+    240
+  ],
+  "ADL_MAS": [
+    5,
+    60
+  ],
+  "ADL_LINE": "cumulative",
+  "MACD_PARAMS": [
+    12,
+    26,
+    9
+  ],
+  "MACD_RESAMPLE": "W"
+}
