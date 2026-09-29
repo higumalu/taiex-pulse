@@ -1,5 +1,8 @@
 # taiex-pulse
 
+**Live dashboard: https://higumalu.github.io/taiex-pulse/** — updated every
+trading day at 21:30 Taipei.
+
 A self-hosted rebuild of the FinLab 台股大盤綜合指標 dashboard
 (`https://ai.finlab.tw/tw_market`), which is being shut down.
 
