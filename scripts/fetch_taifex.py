@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import io
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -24,20 +24,34 @@ START = date(2024, 1, 1)
 TAIEX_FUTURES = {"臺股期貨", "小型臺指期貨", "微型臺指期貨"}
 
 
+def post_range(sess, throttle, d0: date, d1: date) -> str:
+    throttle.wait()
+    r = sess.post(URL, timeout=60, data={
+        "queryType": "2", "doQuery": "1", "commodityId": "",
+        "queryStartDate": f"{d0:%Y/%m/%d}", "queryEndDate": f"{d1:%Y/%m/%d}",
+    })
+    r.raise_for_status()
+    # TAIFEX serves the export as Big5, not UTF-8
+    return r.content.decode("cp950", errors="replace")
+
+
 def fetch_chunk(sess, throttle, d0: date, d1: date) -> pd.DataFrame | None:
     cache = CACHE / f"taifex_{d0:%Y%m%d}_{d1:%Y%m%d}.csv"
     if cache.exists():
         text = cache.read_text(encoding="utf-8")
     else:
-        throttle.wait()
-        r = sess.post(URL, timeout=60, data={
-            "queryType": "2", "doQuery": "1", "commodityId": "",
-            "queryStartDate": f"{d0:%Y/%m/%d}", "queryEndDate": f"{d1:%Y/%m/%d}",
-        })
-        r.raise_for_status()
-        # TAIFEX serves the export as Big5, not UTF-8
-        text = r.content.decode("cp950", errors="replace")
-        cache.write_text(text, encoding="utf-8")
+        # A range that ends on a day with no data yet (today before the 15:00
+        # publication, or a holiday) comes back as an HTML error page for the
+        # whole range. Pull the end date back until the export is a CSV.
+        end = d1
+        text = post_range(sess, throttle, d0, end)
+        while "日期" not in text[:200] and end > d0 and (d1 - end).days < 7:
+            end -= timedelta(days=1)
+            text = post_range(sess, throttle, d0, end)
+        # Only a range that is closed for good may be cached; a CSV that stops
+        # short of d1 would otherwise hide the missing days forever.
+        if "日期" in text[:200] and end == d1 and d1 < date.today():
+            cache.write_text(text, encoding="utf-8")
     if "日期" not in text[:200]:
         return None
     df = pd.read_csv(io.StringIO(text))
