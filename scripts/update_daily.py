@@ -46,10 +46,27 @@ def weekdays(start: date, end: date) -> list[date]:
     return out
 
 
+CORE = ["close_0050", "margin_loans", "cap", "up"]
+LOOKBACK = 30           # trading days checked for holes on every run
+
+
 def last_complete(tw: pd.DataFrame) -> date | None:
-    core = ["close_0050", "margin_loans", "cap", "up"]
-    ok = tw.dropna(subset=[c for c in core if c in tw.columns])
+    ok = tw.dropna(subset=[c for c in CORE if c in tw.columns])
     return date.fromisoformat(ok.index[-1]) if len(ok) else None
+
+
+def holes(tw: pd.DataFrame, tp: pd.DataFrame, taiex: pd.DataFrame) -> list[date]:
+    """Recent trading days with a missing or half-filled row.
+
+    A day that failed in one run is otherwise only retried while it is still
+    among the last REFETCH_DAYS, so a failure followed by later successes
+    would leave a permanent gap. The TAIEX calendar says which days traded.
+    """
+    days = list(taiex.index[-LOOKBACK:]) if len(taiex) else []
+    full = set(tw.dropna(subset=[c for c in CORE if c in tw.columns]).index)
+    tp_ok = set(tp.dropna(subset=["cap"]).index) if len(tp) else set()
+    return [date.fromisoformat(d) for d in days
+            if d not in full or (len(tp) and d not in tp_ok)]
 
 
 def fetch_days(module, feeds, days, referer, interval) -> dict[str, list[pd.DataFrame]]:
@@ -95,6 +112,14 @@ def update_twse(days):
     if len(agg):
         S.upsert("twse_daily", agg)
         S.write("recent_twse_close", S.trim_window(window), index=False)
+    if len(prices):
+        # A day filled in late changes the moving averages of every day after
+        # it, so recount all of them -- but only days with a full MA history
+        # in the window, or the oldest ones would come out as zeros.
+        counts = I.stack_counts(window)
+        counts = counts.iloc[need - 1:]
+        counts = counts[counts.index >= prices["date"].min()]
+        S.upsert("twse_daily", counts)
     print(f"TWSE: {len(agg)} days upserted", flush=True)
 
 
@@ -127,6 +152,10 @@ def update_taifex(start: date, end: date):
         return
     daily = fetch_taifex.net_oi(fetch_taifex.tidy_positions(raw)).set_index("date")
     S.upsert("taifex_net_oi", daily)
+    # an earlier run may have stored an unpublished day as zeros
+    stored = S.read("taifex_net_oi")
+    if (stored["net_oi_value_k"] == 0).any():
+        S.write("taifex_net_oi", stored[stored["net_oi_value_k"] != 0])
     print(f"TAIFEX: {len(daily)} days upserted", flush=True)
 
 
@@ -157,7 +186,11 @@ def main():
     last = last_complete(tw)
     recent = weekdays(end - timedelta(days=14), end)[-REFETCH_DAYS:]
     missing = weekdays(last + timedelta(days=1), end) if last else []
-    days = sorted(set(missing[:MAX_DAYS]) | set(recent))
+    gaps = holes(tw, S.read("tpex_daily"), S.read("taiex"))
+    if gaps:
+        print(f"re-fetching {len(gaps)} incomplete trading days: "
+              f"{', '.join(map(str, gaps))}", flush=True)
+    days = sorted(set(missing[:MAX_DAYS]) | set(recent) | set(gaps))
     if len(missing) > MAX_DAYS:
         warn(f"{len(missing)} weekdays behind; fetching the oldest {MAX_DAYS} this run")
     print(f"last complete day {last}; fetching {len(days)} weekdays "

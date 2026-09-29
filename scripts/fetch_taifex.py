@@ -66,6 +66,10 @@ def tidy_positions(raw: pd.DataFrame) -> pd.DataFrame:
     net = "多空未平倉契約金額淨額(千元)"
     sub = raw[raw["商品名稱"].isin(TAIEX_FUTURES)].copy()
     sub[net] = pd.to_numeric(sub[net].astype(str).str.replace(",", ""), errors="coerce")
+    # Before the 15:00 publication the export already lists today, with every
+    # figure 0. A genuine day never nets to exactly zero across all groups.
+    published = sub.groupby("date")[net].apply(lambda v: v.abs().sum() > 0)
+    sub = sub[sub["date"].map(published)]
     return (sub.groupby(["date", "商品名稱", "身份別"], as_index=False)[net]
                .sum()
                .rename(columns={"商品名稱": "product", "身份別": "investor",
