@@ -1,6 +1,6 @@
 # taiex-pulse
 
-**線上儀表板：https://higumalu.github.io/taiex-pulse/**（每個交易日台北時間 21:30 自動更新）
+**線上儀表板：[higumalu.github.io/taiex-pulse](https://higumalu.github.io/taiex-pulse/)**（每個交易日台北時間 21:30 自動更新）
 
 用免費公開資料重建的「台股大盤綜合指標」儀表板。指標構想來自 FinLab 即將關閉的
 [台股大盤綜合指標](https://ai.finlab.tw/tw_market) 頁面，但所有數字都由本專案從
