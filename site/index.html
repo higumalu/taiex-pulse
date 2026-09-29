@@ -54,6 +54,15 @@
   .score .t{flex:1 1 300px; min-width:0}
   .legend{display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px}
   .dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px}
+  .range{
+    position:sticky; top:0; z-index:10; margin:0 calc(-1 * var(--pad)) 18px;
+    padding:10px var(--pad); background:color-mix(in srgb,var(--bg) 92%,transparent);
+    backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:12px;
+  }
+  .range label{font-size:13px; color:var(--muted); white-space:nowrap}
+  .range input{flex:1; min-width:0; height:32px; accent-color:var(--accent); cursor:pointer}
+  .range output{font-weight:600; font-size:14px; min-width:5.5em; text-align:right; white-space:nowrap}
   footer{color:var(--muted); font-size:12px; margin-top:32px; border-top:1px solid var(--line); padding-top:16px}
   a{color:var(--accent)}
 </style>
@@ -66,6 +75,13 @@
   </header>
 
   <div class="notice" id="notice"></div>
+
+  <div class="range">
+    <label for="span">顯示範圍</label>
+    <input type="range" id="span" min="0" max="7" step="1" value="3"
+           aria-describedby="spanOut">
+    <output id="spanOut" for="span">近 2 年</output>
+  </div>
 
   <div class="card">
     <h2>大盤綜合指標 <span class="badge" id="compBadge"></span></h2>
@@ -90,7 +106,44 @@
 
 <script>
 const UP = '#ce0743', DOWN = '#00cc88', WARN = '#ffcc00';
-const charts = [];
+const charts = [];   // {chart, dates}; dates is null for the gauge
+
+// The one control for how much history every chart shows. Each chart keeps its
+// own slider for panning, but on a phone that slider is too small to also be
+// the way to zoom, so the window size is set here, for all charts at once.
+const SPANS = [
+  {label: '近 3 個月', months: 3},  {label: '近 6 個月', months: 6},
+  {label: '近 1 年', months: 12},   {label: '近 2 年', months: 24},
+  {label: '近 3 年', months: 36},   {label: '近 5 年', months: 60},
+  {label: '近 10 年', months: 120}, {label: '全部', months: null},
+];
+const DEFAULT_SPAN = 3;
+// Touch: in-chart drag-to-zoom would swallow the gesture that scrolls the page.
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+
+function loadSpan(){
+  try {
+    const raw = localStorage.getItem('taiex-pulse.span');
+    const k = raw === null ? NaN : Number(raw);
+    return Number.isInteger(k) && k >= 0 && k < SPANS.length ? k : DEFAULT_SPAN;
+  } catch (e) { return DEFAULT_SPAN; }
+}
+function saveSpan(k){ try { localStorage.setItem('taiex-pulse.span', String(k)); } catch (e) {} }
+let span = loadSpan();
+
+// Index of the first date inside the window ending at the series' own last date.
+function startIndex(dates, months){
+  if (!months || !dates.length) return 0;
+  const cut = new Date(dates[dates.length - 1] + 'T00:00:00Z');
+  cut.setUTCMonth(cut.getUTCMonth() - months);
+  const iso = cut.toISOString().slice(0, 10);
+  const i = dates.findIndex(d => d >= iso);
+  return i < 0 ? 0 : i;
+}
+
+function zoomWindow(dates){
+  return {startValue: startIndex(dates, SPANS[span].months), endValue: dates.length - 1};
+}
 
 function themeColors(){
   const css = getComputedStyle(document.documentElement);
@@ -121,7 +174,7 @@ function lineOption(s, c){
   const benchAxis = shared ? 0 : 1;
   return {
     animation: false,
-    grid: {left: 58, right: (hasBench && !shared) ? 64 : 20, top: 34, bottom: 46},
+    grid: {left: 58, right: (hasBench && !shared) ? 64 : 20, top: 34, bottom: TOUCH ? 58 : 46},
     tooltip: {trigger: 'axis'},
     legend: {show: true, top: 0, right: 0, textStyle: {color: c.muted, fontSize: 11},
              data: hasBench ? [s.title, '加權指數'] : [s.title]},
@@ -136,8 +189,9 @@ function lineOption(s, c){
     visualMap: s.thresholds && s.thresholds.length
       ? [{show: false, seriesIndex: 0, pieces: pieces(s.thresholds)}] : undefined,
     dataZoom: [
-      {type: 'inside', start: 70, end: 100},
-      {type: 'slider', start: 70, end: 100, height: 18, bottom: 8,
+      ...(TOUCH ? [] : [{type: 'inside', ...zoomWindow(s.index)}]),
+      {type: 'slider', ...zoomWindow(s.index), height: TOUCH ? 30 : 18, bottom: 8,
+       brushSelect: false, handleSize: TOUCH ? '140%' : '100%',
        borderColor: c.line, textStyle: {color: c.muted, fontSize: 10}}
     ],
     series: [
@@ -167,12 +221,27 @@ function gaugeOption(value, c){
   };
 }
 
-function mount(el, option){
+function mount(el, option, dates = null){
   const chart = echarts.init(el);
   chart.setOption(option);
-  charts.push(chart);
+  charts.push({chart, dates});
   return chart;
 }
+
+function applySpan(k){
+  span = k;
+  document.getElementById('spanOut').textContent = SPANS[k].label;
+  charts.forEach(({chart, dates}) => {
+    if (!dates) return;
+    const w = zoomWindow(dates);
+    chart.setOption({dataZoom: chart.getOption().dataZoom.map(() => ({...w}))});
+  });
+}
+
+const spanInput = document.getElementById('span');
+spanInput.value = span;
+document.getElementById('spanOut').textContent = SPANS[span].label;
+spanInput.addEventListener('input', () => { applySpan(Number(spanInput.value)); saveSpan(span); });
 
 fetch('data/market.json').then(r => r.json()).then(d => {
   const c = themeColors();
@@ -196,7 +265,7 @@ fetch('data/market.json').then(r => r.json()).then(d => {
   document.getElementById('compDesc').textContent = comp.description;
   mount(document.getElementById('gauge'), gaugeOption(last, c));
   mount(document.getElementById('compChart'),
-        lineOption({...comp, thresholds: [4, 6]}, c));
+        lineOption({...comp, thresholds: [4, 6]}, c), comp.index);
 
   const cards = document.getElementById('cards');
   d.series.forEach((s, i) => {
@@ -207,7 +276,7 @@ fetch('data/market.json').then(r => r.json()).then(d => {
       (s.weight ? `<span class="badge">權重 ${s.weight}</span>` : '') + '</h2>' +
       `<p class="desc">${s.description}</p><div class="chart" id="ch${i}"></div>`;
     cards.appendChild(card);
-    mount(card.querySelector('.chart'), lineOption(s, c));
+    mount(card.querySelector('.chart'), lineOption(s, c), s.index);
   });
 
   document.getElementById('foot').innerHTML =
@@ -218,7 +287,7 @@ fetch('data/market.json').then(r => r.json()).then(d => {
   document.getElementById('sub').textContent = '載入 data/market.json 失敗：' + e.message;
 });
 
-addEventListener('resize', () => charts.forEach(ch => ch.resize()));
+addEventListener('resize', () => charts.forEach(({chart}) => chart.resize()));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => location.reload());
 </script>
 </body>
