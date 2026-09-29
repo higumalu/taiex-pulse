@@ -56,13 +56,33 @@
   .dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px}
   .range{
     position:sticky; top:0; z-index:10; margin:0 calc(-1 * var(--pad)) 18px;
-    padding:10px var(--pad); background:color-mix(in srgb,var(--bg) 92%,transparent);
-    backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
+    padding:10px var(--pad); background:color-mix(in srgb,var(--bg) 90%,transparent);
+    backdrop-filter:blur(6px);
     display:flex; align-items:center; gap:12px;
   }
-  .range label{font-size:13px; color:var(--muted); white-space:nowrap}
-  .range input{flex:1; min-width:0; height:32px; accent-color:var(--accent); cursor:pointer}
-  .range output{font-weight:600; font-size:14px; min-width:5.5em; text-align:right; white-space:nowrap}
+  .range .lbl{font-size:13px; color:var(--muted); white-space:nowrap}
+  .seg{
+    flex:1; min-width:0; display:flex; gap:2px; padding:3px;
+    background:var(--card); border:1px solid var(--line); border-radius:99px;
+    overflow-x:auto; scrollbar-width:none;
+  }
+  .seg::-webkit-scrollbar{display:none}
+  .seg button{
+    flex:1 0 auto; min-height:30px; padding:0 10px; border:0; border-radius:99px;
+    background:transparent; color:var(--muted); font:inherit; font-size:13px;
+    cursor:pointer; white-space:nowrap;
+  }
+  .seg button:hover{color:var(--ink)}
+  .seg button[aria-checked="true"]{
+    background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--ink); font-weight:600;
+  }
+  .seg button:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  @media (pointer: coarse){ .seg button{min-height:36px} }
+  /* phones: all eight options must fit without scrolling, so drop the label */
+  @media (max-width: 480px){
+    .range .lbl{display:none}
+    .seg button{padding:0 4px; font-size:12.5px}
+  }
   footer{color:var(--muted); font-size:12px; margin-top:32px; border-top:1px solid var(--line); padding-top:16px}
   a{color:var(--accent)}
 </style>
@@ -77,10 +97,8 @@
   <div class="notice" id="notice"></div>
 
   <div class="range">
-    <label for="span">顯示範圍</label>
-    <input type="range" id="span" min="0" max="7" step="1" value="3"
-           aria-describedby="spanOut">
-    <output id="spanOut" for="span">近 2 年</output>
+    <span class="lbl" id="spanLbl">顯示範圍</span>
+    <div class="seg" id="span" role="radiogroup" aria-labelledby="spanLbl"></div>
   </div>
 
   <div class="card">
@@ -112,10 +130,10 @@ const charts = [];   // {chart, dates}; dates is null for the gauge
 // own slider for panning, but on a phone that slider is too small to also be
 // the way to zoom, so the window size is set here, for all charts at once.
 const SPANS = [
-  {label: '近 3 個月', months: 3},  {label: '近 6 個月', months: 6},
-  {label: '近 1 年', months: 12},   {label: '近 2 年', months: 24},
-  {label: '近 3 年', months: 36},   {label: '近 5 年', months: 60},
-  {label: '近 10 年', months: 120}, {label: '全部', months: null},
+  {label: '3月', title: '近 3 個月', months: 3},  {label: '6月', title: '近 6 個月', months: 6},
+  {label: '1年', title: '近 1 年', months: 12},    {label: '2年', title: '近 2 年', months: 24},
+  {label: '3年', title: '近 3 年', months: 36},    {label: '5年', title: '近 5 年', months: 60},
+  {label: '10年', title: '近 10 年', months: 120}, {label: '全部', title: '全部歷史', months: null},
 ];
 const DEFAULT_SPAN = 3;
 // Touch: in-chart drag-to-zoom would swallow the gesture that scrolls the page.
@@ -230,7 +248,7 @@ function mount(el, option, dates = null){
 
 function applySpan(k){
   span = k;
-  document.getElementById('spanOut').textContent = SPANS[k].label;
+  markSpan();
   charts.forEach(({chart, dates}) => {
     if (!dates) return;
     const w = zoomWindow(dates);
@@ -238,10 +256,31 @@ function applySpan(k){
   });
 }
 
-const spanInput = document.getElementById('span');
-spanInput.value = span;
-document.getElementById('spanOut').textContent = SPANS[span].label;
-spanInput.addEventListener('input', () => { applySpan(Number(spanInput.value)); saveSpan(span); });
+const spanGroup = document.getElementById('span');
+SPANS.forEach((o, k) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.setAttribute('role', 'radio');
+  b.title = o.title;
+  b.textContent = o.label;
+  b.addEventListener('click', () => { applySpan(k); saveSpan(k); });
+  spanGroup.appendChild(b);
+});
+function markSpan(){
+  [...spanGroup.children].forEach((b, k) => {
+    b.setAttribute('aria-checked', String(k === span));
+    b.tabIndex = k === span ? 0 : -1;
+  });
+}
+// Arrow keys move the selection, as in any radio group.
+spanGroup.addEventListener('keydown', e => {
+  const step = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[e.key];
+  if (!step) return;
+  e.preventDefault();
+  const k = Math.min(SPANS.length - 1, Math.max(0, span + step));
+  applySpan(k); saveSpan(k); spanGroup.children[k].focus();
+});
+markSpan();
 
 fetch('data/market.json').then(r => r.json()).then(d => {
   const c = themeColors();
