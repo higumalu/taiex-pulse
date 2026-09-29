@@ -14,3 +14,6 @@ logs/
 __pycache__/
 *.pyc
 .venv/
+
+# Working notes for AI agents, kept local
+HANDOVER.md
