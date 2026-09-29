@@ -1,240 +1,161 @@
 # taiex-pulse
 
-**Live dashboard: https://higumalu.github.io/taiex-pulse/** — updated every
-trading day at 21:30 Taipei.
+**線上儀表板：https://higumalu.github.io/taiex-pulse/**（每個交易日台北時間 21:30 自動更新）
 
-A self-hosted rebuild of the FinLab 台股大盤綜合指標 dashboard
-(`https://ai.finlab.tw/tw_market`), which is being shut down.
+用免費公開資料重建的「台股大盤綜合指標」儀表板。指標構想來自 FinLab 即將關閉的
+[台股大盤綜合指標](https://ai.finlab.tw/tw_market) 頁面，但所有數字都由本專案從
+證交所、櫃買中心、期交所與國發會的公開資料自行計算。
 
-Everything is recomputed from free public sources. The original site's data was
-archived first and is kept **only as a validation target** — every indicator we
-publish is computed by our own pipeline and checked against FinLab's series.
-The site never shows an archived value: an indicator whose inputs have not been
-crawled far enough is left off the page instead.
+原站資料在關站前先封存下來，**只拿來驗證與校準**，網頁上從不顯示封存值：輸入資料還不夠長的指標，會直接不顯示，而不是用別人的數字補上。
 
-> Picking this up from someone else? Read **`HANDOVER.md`** first — current
-> state, the traps already paid for, and what is worth doing next.
+> 要接手這個專案？先讀 **`HANDOVER.md`**，裡面有目前進度、踩過的坑，以及接下來值得做的事。
 
-## Layout
+僅供參考，不構成投資建議。
+
+## 目錄結構
 
 ```
-data/store/      the published daily aggregates: a checkout of the `data` branch
-data/finlab_archive/  archived FinLab Firestore documents -- validation only, not in the repo
-data/raw/        raw NDC responses
-data/cache/      crawler manifests and raw chunk cache
-data/parquet/    tidy tables produced by the fetchers
-scripts/         fetchers, indicator builders, validators
-site/            the dashboard itself
+data/store/           網站用的每日彙總資料，是 `data` branch 的 worktree
+data/params.json      校準出的均線長度
+data/weights.json     校準出的綜合指標權重與門檻
+data/finlab_archive/  FinLab 封存（僅供驗證，不在 repo 裡）
+data/parquet/         爬蟲產出的逐股資料表（不在 repo 裡）
+data/cache/           爬蟲 manifest 與快取（不在 repo 裡）
+data/raw/             國發會原始回應（不在 repo 裡）
+scripts/              爬蟲、指標計算、校準、驗證
+site/                 儀表板頁面
 ```
 
-## The archive
+## 指標
 
-The live site was a Nuxt SPA that fetched one Firestore document and only
-rendered it; all computation happened on FinLab's backend. Two documents were
-captured on 2026-09-22 (project `fdata-299302`, collection `twMarket`):
-
-| file | contents |
-| --- | --- |
-| `twMarket_holdIndicator_20260922.json` | the composite plus its 10 sub-indicators, full history |
-| `twMarket_futuresPositioning_20260922.json` | 法人期貨部位動能, daily since 2010-01-04 |
-
-They live in `data/finlab_archive/` and are read only through
-`scripts/finlab_archive.py`, by the calibration and validation scripts.
-`build_site_data.py` does not import it, and the folder is not committed: the
-repository ships code, not FinLab's data. The descriptions on the page are our
-own wording of what our code computes.
-
-Each entry carries `title`, `description` (FinLab's own wording, which is where
-most of the indicator definitions come from), `index` (dates), `values`
-(`benchmark` = TAIEX, `ind` = the indicator) and `latest_signal`.
-
-## Data sources (all verified working, no auth)
-
-| source | endpoint | notes |
+| 指標 | 本專案的算法 | 與 FinLab 封存的吻合度 |
 | --- | --- | --- |
-| TWSE every stock's close and up/down mark | `rwd/zh/afterTrading/MI_INDEX?type=ALL` | ~5 MB/day, from 2004-02-11 |
-| TWSE daily TAIEX close | `rwd/zh/afterTrading/FMTQIK` | a whole month per request, **back to 1990** |
-| TPEx daily quotes | `tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes` | close **and 發行股數** in one report, plus up/down marks |
-| TPEx P/B per stock | `tpex.org.tw/www/zh-tw/afterTrading/peQryDate` | 上櫃 side |
-| TPEx margin balances | `tpex.org.tw/www/zh-tw/margin/balance` | board lots only, no loan amount; back to at least 2007 |
-| TWSE margin balances | `rwd/zh/marginTrading/MI_MARGN?selectType=ALL` | per-stock lots + market totals |
-| TWSE P/B per stock | `rwd/zh/afterTrading/BWIBBU_d?selectType=ALL` | from 2005-09 |
-| TWSE shares outstanding | `rwd/zh/fund/MI_QFIIS?selectType=ALLBUT0999` | only free daily source of 發行股數 |
-| NDC PMI | POST `index.ndc.gov.tw/n/json/data/PMI/total` | 2012-07 onwards |
-| NDC NMI | POST `index.ndc.gov.tw/n/json/data/NMI/total` | 2014-08 onwards |
-| NDC 景氣指標/對策信號 | POST `index.ndc.gov.tw/n/json/data/eco/indicators` | 1984-01 onwards |
-| TAIFEX 三大法人期貨 | POST `taifex.com.tw/cht/3/futContractsDateDown` | **only ~2 years back** |
+| 生命線指標 | 加權指數 vs 20 日均線 | 完全一致 |
+| 台股多空排列家數 | 均線呈多頭／空頭排列的個股家數差，再取短減長均線 | 方向一致 89.7 %，相關 0.92 |
+| 騰落線指標（ADL） | 上漲減下跌家數的累積線，短減長均線 | 方向一致 94.2 %，相關 0.99 |
+| 大盤週線MACD | 0050 週線 MACD(12,26,9) 柱狀體 | 數值尺度對得上 0050，但相關僅 0.14，**仍待修正** |
+| 大盤融資維持率 | Σ(融資張數 × 1000 × 收盤價) ÷ 融資餘額，僅上市 | 1.8980 vs 1.9036（差 0.3 %） |
+| 大盤股價淨值比 | Σ(收盤價 × 股數) ÷ Σ(收盤價 × 股數 ÷ 本淨比)，上市＋上櫃 | 相關 0.9993，水準固定高 1.14 倍，門檻已依比例換算 |
+| 製造業 PMI／未來六個月展望 | 國發會公布值 | 完全一致 |
+| 非製造業 NMI | 國發會公布值 | 完全一致 |
+| 台灣景氣對策燈號 | 國發會分數，3 月均線 vs 12 月均線 | 一致 |
+| 法人期貨部位動能 | 三大法人大台＋小台＋微台淨未平倉金額，10 日變化 ÷ 250 日標準差 | 相關 0.9977，MAE 0.07 |
 
-### TWSE truncates silently under load
+月資料一律依「實際公布日」對齊：PMI、NMI 在次月初，景氣燈號在次月 27 日左右，所以不會用到當時還沒公布的數字。法人期貨部位動能不計入綜合分數。
 
-TWSE does not rate-limit with HTTP 429. It answers an over-eager client with
-`stat: "OK"` and a payload that is simply **missing tables** -- the same request
-replayed later returns the full document. A first backfill at a 2.0 s interval
-recorded 2,900 days and lost 609 of them (21 %) this way, with no error in the
-log beyond a single timeout.
+### 綜合指標
 
-So the crawler declares the tables each feed must return (`REQUIRED` in
-`fetch_twse.py`) and treats a reply missing any of them as a throttling signal:
-back off, retry, and do **not** write the day to the manifest. Days the market
-was genuinely closed are recorded under a separate `<feed>_closed` key so they
-are not retried forever. `reconcile.py` walks an existing manifest against what
-actually landed in parquet and re-queues anything with no data behind it.
-A 40-day probe at 3.5 s saw zero truncation.
+十項子指標各自判斷偏多（1）或偏空（0），加權後換算成 0–10 分。
 
-Two tables also only appear in recent years, so neither can be relied on:
-the index tables inside MI_INDEX start in 2009 (hence FMTQIK above), and
-漲跌證券數合計 starts in 2011 -- advances and declines are counted from the
-per-stock 漲跌(+/-) column instead, which works from 2004.
+FinLab 的原始公式**無法從公開資料還原**。量測封存資料裡「只有一個子訊號翻轉」時總分的跳動幅度，推算出來的權重加總是 14 而不是 10。而且把 2,964 天依十個訊號的組合分組，有 39 % 的日子落在同一組內、總分卻正好差 1.0 的群組裡。這表示原站至少有一個頁面上沒顯示的輸入，或是會隨時間移動的門檻。
 
-The NDC endpoints are POST-only and CSRF-protected: fetch the matching HTML page
-first, read `<meta name="csrf-token">`, and send it back with the session cookie.
-TAIFEX serves its CSV as Big5, not UTF-8.
+所以本專案改用自己的權重：`calibrate_weights.py` 對封存總分擬合出一組權重，寫進 `data/weights.json`。網站只用得到這些擬合出的數字。某些子指標在當天還沒有資料時，就用現有子指標的權重重新換算；權重涵蓋率未達 60 % 的日子不給分。之後的方向是以這組權重為起點自由調整，不追求和原站一致。
 
-## Indicator definitions
+頁面的配色門檻沿用原站：總分 0–4 綠、4–6 黃、6–10 紅；融資維持率 1.6／1.7；股價淨值比 1.4／2（已換算到本專案的尺度）；PMI、NMI 以 50 為界；PMI 展望 40／60；景氣燈號 17／23／32／38。依台股慣例，紅色代表上漲，綠色不代表「好」。
 
-Descriptions are FinLab's; the "how we compute it" column is what this repo does.
+## 資料來源
 
-| indicator | our construction | status |
+全部免登入，並已實測可以從 GitHub Actions 取得（`scripts/probe_sources.py`）。
+
+| 來源 | 端點 | 說明 |
 | --- | --- | --- |
-| 生命線指標 | TAIEX vs its SMA(20) | **exact** — the archived `ind` matches SMA(20) to 0.0 |
-| 台股多空排列家數 | count of stocks in bullish vs bearish MA stacking, then short-minus-long MA of the spread | needs backfill |
-| 騰落線指標 (ADL) | cumulative advance-minus-decline line, short-minus-long MA | needs backfill |
-| 大盤週線MACD | MACD(12,26,9) histogram on weekly 0050 | value scale matches 0050, not the index |
-| 大盤融資維持率 | Σ(margin lots × 1000 × close) ÷ margin balance in TWD, TWSE only | 1.8980 vs FinLab 1.9036 on 2026-09-18 (**0.3 %**). TPEx publishes margin only in board lots, never the loan amount, and TWSE alone already matches — FinLab looks to be 上市-only here too |
-| 大盤股價淨值比 | Σ(close × shares) ÷ Σ(close × shares ÷ P/B), 上市 + 上櫃 | 4.11 vs 3.64 — level differs by a stable 1.14×, threshold rescaled; see gaps |
-| 製造業PMI / 未來六個月展望 | NDC published value | **exact match** |
-| 非製造業NMI | NDC published value | **exact match** |
-| 台灣景氣對策燈號 | NDC score, MA(3) vs MA(12) crossover | series matches |
-| 法人期貨部位動能 | 三大法人 net OI value across 大台+小台+微台, 10-day change ÷ 250-day stdev | corr **0.9977**, MAE 0.07 |
+| 證交所 個股收盤與漲跌 | `rwd/zh/afterTrading/MI_INDEX?type=ALL` | 每天約 5 MB，從 2004-02-11 起 |
+| 證交所 加權指數收盤 | `rwd/zh/afterTrading/FMTQIK` | 一次一個月，可回溯到 1990 |
+| 證交所 融資餘額 | `rwd/zh/marginTrading/MI_MARGN?selectType=ALL` | 個股張數與市場總額 |
+| 證交所 個股本淨比 | `rwd/zh/afterTrading/BWIBBU_d?selectType=ALL` | 從 2005-09 起 |
+| 證交所 發行股數 | `rwd/zh/fund/MI_QFIIS?selectType=ALLBUT0999` | 唯一免費的每日發行股數來源 |
+| 櫃買 每日行情 | `tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes` | 同一份報表就有收盤價、發行股數和漲跌 |
+| 櫃買 個股本淨比 | `tpex.org.tw/www/zh-tw/afterTrading/peQryDate` | 從 2007 起 |
+| 櫃買 融資餘額 | `tpex.org.tw/www/zh-tw/margin/balance` | 只有張數、沒有金額 |
+| 國發會 PMI／NMI | POST `index.ndc.gov.tw/n/json/data/PMI/total`、`.../NMI/total` | 2012-07、2014-08 起 |
+| 國發會 景氣對策信號 | POST `index.ndc.gov.tw/n/json/data/eco/indicators` | 1984-01 起 |
+| 期交所 三大法人期貨 | POST `taifex.com.tw/cht/3/futContractsDateDown` | **只能回溯約兩年** |
 
-### The composite (大盤綜合指標)
+### 已知的來源陷阱
 
-A weighted sum of the ten binary sub-signals on a 0.5 grid, displayed 0–10.
-Measuring how far the archived composite moves when exactly one sub-signal flips
-gives each indicator's step size:
+- **證交所被打太快時不回 429**：它會回 `stat: "OK"`，但悄悄少掉表格，稍後重送同一個請求又是完整的。第一次用 2 秒間隔回補，2,900 天裡有 609 天（21 %）就這樣遺失，log 裡幾乎看不出來。所以爬蟲會宣告每個 feed 必須回傳哪些表（`fetch_twse.py` 的 `REQUIRED`），少了任何一張就視為被限流，退避後重試，而且不記入 manifest。真正休市的日子另外記在 `<feed>_closed`，避免無限重試。
+- **證交所每天 13:30–13:45 暫停「查詢全部資料」**：回應是「每日1:30PM到1:45PM為網站尖峰時間，查詢全部資料功能暫停使用!」。這不是休市，爬蟲會等暫停結束再抓。
+- **MI_INDEX 裡的指數表從 2009 年才有，漲跌家數合計從 2011 年才有**：所以加權指數改用 FMTQIK，漲跌家數改由個股的漲跌欄位自己數，這樣可以回溯到 2004。
+- **國發會的端點只接受 POST，並有 CSRF 保護**：要先抓對應的 HTML 頁面，讀出 `<meta name="csrf-token">`，再連同 session cookie 送回去。
+- **期交所的 CSV 是 Big5 編碼**。查詢區間的結束日如果還沒有資料（例如下午 3 點前的今天，或是休市日），整段區間都會回傳錯誤頁。而且公布前的今天，數值會全部是 0。
 
-| indicator | flips | composite also moved | step |
-| --- | --- | --- | --- |
-| 台股多空排列家數 | 202 | 99 % | 1.5 |
-| 生命線指標 | 295 | 95 % | 1.0 |
-| 騰落線指標(ADL) | 84 | 100 % | 1.5 |
-| 大盤週線MACD | 51 | 90 % | 1.0 |
-| 大盤融資維持率 | 20 | 100 % | 2.0 |
-| 大盤股價淨值比 | 19 | 84 % | 1.0 |
-| 製造業PMI | 28 | 93 % | 1.5 |
-| PMI未來6月展望 | 16 | 94 % | 1.5 |
-| 非製造業NMI | 24 | 92 % | 1.0 |
-| 景氣對策燈號 | 16 | 100 % | 2.0 |
+## 每日更新與 `data` branch
 
-Those steps sum to 14, not 10, and grouping the 2,964 archived days by their
-ten-signal pattern leaves 39 % of days in groups holding two composite values
-exactly 1.0 apart. So FinLab's composite has at least one input that the page
-never showed, or thresholds that move (rolling quantiles). The exact formula is
-**not recoverable** from public data; this repo fits its own weights against the
-archived composite instead and says so on the page. Only the fitted numbers
-(`data/weights.json`) reach the site. On days where some sub-signals have no
-data yet, the score is rescaled over the weight that is present, and a day is
-only scored once that covers at least 60 % of the total.
+網站只讀 `data/store/`，也就是 `data` branch：每個交易日一列的彙總值 CSV（家數、市值、淨值、融資金額等），外加最近 80 個交易日的逐股收盤價，給多空排列計算均線用。總共約 3 MB，每天只增加幾 KB。檔案格式寫在 `scripts/store.py`。
 
-Frontend colour thresholds, read out of the original bundle, are reproduced
-exactly: gauge 0–4 green / 4–6 yellow / 6–10 red; 融資維持率 ≤1.6 / 1.6–1.7 / >1.7;
-股價淨值比 ≤1.4 / 1.4–2 / >2; PMI and NMI split at 50; PMI 展望 at 40 and 60;
-景氣燈號 9–17 blue, 17–23 yellow-blue, 23–32 green, 32–38 yellow-red, 38–45 red.
-Red means "up" in the Taiwan convention, so green is not "good".
+`Daily update` workflow 在平日台北時間 21:30 執行，程式碼推到 `dev` 時也會觸發一次：
 
-## Known gaps
+1. `update_daily.py` 抓最新的交易日，並重抓兩種日子：
+   - 最近 5 個平日，因為融資和股數要到晚上才公布。
+   - 最近 30 個交易日裡欄位不齊的日子。
+2. 把彙總值寫回 `data/store/`，再 commit 到 `data` branch。
+3. `build_site_data.py` 重建 `site/data/market.json`。
+4. 部署到 GitHub Pages。
 
-0. **What genuinely cannot be obtained.** Only three things, none of them
-   fixable with more crawling: 法人期貨部位動能 before 2024 (TAIFEX's export
-   reaches back ~2 years, and the single-date page returns no table for 2008,
-   2015 or 2020); any per-stock data before 2004-02-11 (MI_INDEX refuses it
-   outright, STOCK_DAY starts 2010-01-04); and FinLab's own composite weights.
-   Everything else on the page can be computed from public sources, most of it
-   with *more* history than FinLab had -- see the table above.
+CI 不需要逐股的完整歷史。多空排列只要窗口內的收盤價就能算，結果已驗證和用完整歷史算的逐格相同。
 
-1. **大盤股價淨值比 level.** We compute this ourselves without trouble -- over 28
-   days where both exchanges are in hand, our series tracks FinLab's at
-   **correlation 0.9993**, differing only by a constant factor of **1.1440**
-   (range 1.1420-1.1469, standard deviation 0.0012). Adding TPEx changed the
-   level by -0.4 %, so the missing 櫃買 half was never the explanation.
-
-   The numerator checks out stock by stock (2330 at close 2,460 x 25.932 bn
-   shares = NT$63.79 tn cap, P/B 9.92), so FinLab's implied aggregate book value
-   is simply ~14 % larger than the one behind the exchanges' published per-share
-   P/B. Total equity including non-controlling interests and preferred shares is
-   the obvious candidate, but without FinLab's source it stays unproven.
-
-   With the factor that steady, the level difference carries no information, so
-   rather than bend our number to match, `calibrate_weights.py` measures the ratio
-   on the overlapping days and writes the fitted P/B threshold onto our scale.
-   The signal is then exactly equivalent.
-
-   `market_pbr` refuses to emit a date unless **both** exchanges are present and
-   each kept a plausible number of stocks. An earlier version quietly published
-   上櫃-only figures for dates where the 上市 share-count feed had not been
-   crawled yet -- a 3.92 that looked like a market P/B but was one exchange.
-2. **法人期貨部位動能 before 2024.** TAIFEX's public export only reaches back about
-   two years. History before that exists only in the archive, so the page shows
-   this indicator from 2025-02 only.
-3. **多空排列家數 and ADL before 2004-02-11.** MI_INDEX does not go back further,
-   so these start ~3 years later than FinLab's series.
-4. **The composite weights** are our own fit, not FinLab's (see above).
-
-## Daily updates and the `data` branch
-
-The site is built from `data/store/` only, a checkout of the `data` branch that
-holds one row per trading day of aggregates (counts, market cap, book value,
-margin totals, ...) as CSV, plus a rolling window of per-stock closes for
-多空排列 -- about 3 MB in all, growing by a few KB a day. See
-`scripts/store.py` for the file layout.
-
-The `Daily update` workflow runs at 21:30 Taipei on weekdays:
-`update_daily.py` fetches the new trading days (and re-fetches the last five,
-since margin and share-count reports can land late), upserts the aggregates,
-commits them to `data`, then `build_site_data.py` rebuilds the page and it is
-deployed to GitHub Pages. No per-stock history is needed in CI.
-
-To work on the site locally, check the branch out where the build expects it:
+### 在本機跑網站
 
 ```bash
+pip install -r requirements.txt
 git worktree add data/store data
 cd scripts && python build_site_data.py
-```
-
-## Rebuilding from a full crawl
-
-Only needed to re-derive history, e.g. after changing an indicator's windows
-(the aggregates bake in `STACK_MAS`; `build_site_data.py` refuses to run on a
-store exported with different ones).
-
-```bash
-cd scripts
-python fetch_ndc.py                 # monthly macro, seconds
-python fetch_taifex.py              # institutional futures, ~1 minute
-python fetch_twse.py --interval 2.0 # the long one, resumable, see below
-```
-
-`fetch_twse.py` walks four feeds one trading day at a time, parses each response
-on arrival (raw MI_INDEX is far too large to keep) and appends per-year parquet
-files. A manifest in `data/cache/twse_manifest.json` records finished days, so
-the crawl can be interrupted and restarted freely. It backs off on HTTP 429, 5xx
-and the HTML error pages TWSE serves when it is throttling.
-
-Full backfill is roughly 21,600 requests. Measured rate is about 8 trading days
-per minute (MI_INDEX alone is ~5 MB/day and the parse dominates), so budget
-**18-24 hours**, and a few hundred MB of parquet. Use `--start`/`--end`/`--limit`
-for partial runs.
-
-Then re-export the store and rebuild the page:
-
-```bash
-python calibrate_weights.py   # fit composite weights (needs the FinLab archive)
-python store.py export        # parquet -> data/store, then commit on `data`
-python build_site_data.py     # write site/data/market.json
 cd ../site && python -m http.server 8765 --bind 127.0.0.1
 ```
 
-ECharts is vendored at `site/vendor/echarts.min.js` rather than loaded from a
-CDN, so the dashboard also works with no network. The page must be served over
-HTTP -- opening `index.html` from the filesystem blocks the `fetch` of
-`data/market.json`.
+頁面必須透過 HTTP 開啟；直接打開 `index.html` 的話，瀏覽器會擋掉讀取 `data/market.json`。ECharts 放在 `site/vendor/` 裡，離線也能用。
+
+## 從完整爬取重建歷史
+
+只有要重算歷史時才需要，例如改了均線長度。彙總值裡已經內含 `STACK_MAS`，如果參數和 store 匯出時用的不同，`build_site_data.py` 會拒絕執行。
+
+```bash
+cd scripts
+python fetch_twse_index.py              # 加權指數 1990 起，約 440 次請求
+python fetch_twse.py --interval 4.0     # 上市 4 個 feed，可中斷續跑
+python fetch_tpex.py --interval 3.5     # 上櫃，可中斷續跑
+python fetch_taifex.py                  # 法人期貨，約 1 分鐘
+python fetch_ndc.py                     # 國發會月資料，幾秒鐘
+python status.py                        # 看進度
+python reconcile.py --apply             # 把沒留下資料的日子重新排進佇列
+```
+
+證交所完整回補大約 21,600 次請求，以 4 秒間隔要 **一天以上**，會產生數百 MB 的 parquet。請維持這個間隔，對方伺服器很容易限流。
+
+爬完後：
+
+```bash
+python calibrate_params.py    # 找回原站沒公開的均線長度（需要 FinLab 封存）
+python calibrate_weights.py   # 擬合綜合指標權重與門檻（需要 FinLab 封存）
+python store.py export        # parquet → data/store
+python update_daily.py        # 補上本機爬蟲之後的日子
+python build_site_data.py
+```
+
+然後進 `data/store/` 裡 commit 並推送 `data` branch。
+
+## 已知限制
+
+- **真正拿不到的只有三樣**，再怎麼爬也補不回來：
+  - 2024 年以前的法人期貨部位（期交所只提供約兩年）。
+  - 2004-02-11 以前的逐股資料（MI_INDEX 不提供）。
+  - FinLab 原本的綜合指標權重。
+- **大盤股價淨值比的水準比 FinLab 高約 14 %**：兩者相關 0.9993，比例穩定在 1.144 倍（標準差 0.0012）。加入上櫃只讓數值變動 -0.4 %，個股分子也逐檔核對過，所以差異應該來自淨值的定義。最可能的解釋是原站用含非控制權益的總權益，而交易所公布的本淨比用的是母公司普通股權益。本專案保留自己的數字，把門檻依比例換算，所以訊號完全等價。
+- **上櫃資料正在回補中**：補完之前，大盤股價淨值比不會顯示。
+- **法人期貨部位動能只從 2025-02 開始**：期交所的資料最早只到 2024，再扣掉 250 日標準差的暖身期。
+- **大盤週線MACD 和原站相關度還很低**，詳見 `HANDOVER.md`。
+
+## FinLab 封存
+
+原站是一個 Nuxt SPA，只讀取並顯示一份 Firestore 文件，所有計算都在 FinLab 後端完成。2026-09-22 封存了兩份文件（project `fdata-299302`、collection `twMarket`）：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `twMarket_holdIndicator_20260922.json` | 綜合指標與 10 項子指標的完整歷史 |
+| `twMarket_futuresPositioning_20260922.json` | 法人期貨部位動能，2010-01-04 起的日資料 |
+
+它們放在 `data/finlab_archive/`，只透過 `scripts/finlab_archive.py` 給校準和驗證腳本讀取，`build_site_data.py` 不會引用。這個資料夾不在 repo 裡：這個 repo 只發佈程式碼，不發佈 FinLab 的資料。網頁上的指標說明文字，也是本專案針對自己的算法重新撰寫的。
+
+## 授權
+
+程式碼採 [Apache License 2.0](LICENSE)。資料來自上述政府機關與交易所的公開資訊，使用時請註明出處。
