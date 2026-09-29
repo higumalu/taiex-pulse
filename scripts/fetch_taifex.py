@@ -59,6 +59,24 @@ def fetch_chunk(sess, throttle, d0: date, d1: date) -> pd.DataFrame | None:
     return df
 
 
+def tidy_positions(raw: pd.DataFrame) -> pd.DataFrame:
+    """Net open-interest value per date, product and investor, TAIEX-sized futures only."""
+    raw = raw.copy()
+    raw["date"] = pd.to_datetime(raw["日期"]).dt.strftime("%Y-%m-%d")
+    net = "多空未平倉契約金額淨額(千元)"
+    sub = raw[raw["商品名稱"].isin(TAIEX_FUTURES)].copy()
+    sub[net] = pd.to_numeric(sub[net].astype(str).str.replace(",", ""), errors="coerce")
+    return (sub.groupby(["date", "商品名稱", "身份別"], as_index=False)[net]
+               .sum()
+               .rename(columns={"商品名稱": "product", "身份別": "investor",
+                                net: "net_oi_value_k"}))
+
+
+def net_oi(tidy: pd.DataFrame) -> pd.DataFrame:
+    """The three institutional groups summed: one net value per date."""
+    return tidy.groupby("date", as_index=False)["net_oi_value_k"].sum()
+
+
 def main():
     end = date.today()
     sess = session(referer=REFERER)
@@ -75,18 +93,11 @@ def main():
         cur = stop + pd.Timedelta(days=1).to_pytimedelta()
 
     raw = pd.concat(frames, ignore_index=True)
-    raw["date"] = pd.to_datetime(raw["日期"]).dt.strftime("%Y-%m-%d")
     print("products found:", sorted(raw["商品名稱"].dropna().unique())[:20])
-
-    net = "多空未平倉契約金額淨額(千元)"
-    sub = raw[raw["商品名稱"].isin(TAIEX_FUTURES)].copy()
-    sub[net] = pd.to_numeric(sub[net].astype(str).str.replace(",", ""), errors="coerce")
-    tidy = (sub.groupby(["date", "商品名稱", "身份別"], as_index=False)[net]
-               .sum()
-               .rename(columns={"商品名稱": "product", "身份別": "investor", net: "net_oi_value_k"}))
+    tidy = tidy_positions(raw)
     save(tidy, "taifex_inst_futures")
 
-    daily = tidy.groupby("date", as_index=False)["net_oi_value_k"].sum()
+    daily = net_oi(tidy)
     print(f"  aggregate span {daily.date.min()} .. {daily.date.max()}  n={len(daily)}")
     save(daily, "taifex_inst_net_oi")
 

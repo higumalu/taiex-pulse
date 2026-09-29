@@ -64,19 +64,35 @@ def lifeline(taiex: pd.Series) -> pd.DataFrame:
     return _out(ma, taiex > ma)
 
 
-def bull_bear_stack(prices: pd.DataFrame) -> pd.DataFrame:
-    """台股多空排列家數.
+def stack_counts(prices: pd.DataFrame) -> pd.DataFrame:
+    """Per day, how many stocks sit in bullish and in bearish MA order.
 
     A stock is bullish when its short MA sits above its mid MA above its long
-    MA, bearish when the order reverses. The plotted line is the short-minus-long
-    moving average of (bullish count - bearish count).
+    MA, bearish when the order reverses. Only the last max(STACK_MAS) days of
+    closes matter for any one date, which is what lets the daily update carry
+    a short window of prices instead of the whole history.
     """
     wide = prices.pivot(index="date", columns="code", values="close").sort_index()
-    s, m, l = (wide.rolling(n).mean() for n in STACK_MAS)
-    spread = (((s > m) & (m > l)).sum(axis=1) - ((s < m) & (m < l)).sum(axis=1)).astype(float)
+    # Rounded so the order does not hinge on floating-point residue: for a stock
+    # whose price has not moved, the MAs are equal in theory but differ in the
+    # last bits depending on how much history the rolling sum ran over.
+    s, m, l = (wide.rolling(n).mean().round(6) for n in STACK_MAS)
+    return pd.DataFrame({"stack_bull": ((s > m) & (m > l)).sum(axis=1),
+                         "stack_bear": ((s < m) & (m < l)).sum(axis=1)}).astype(float)
+
+
+def bull_bear_from_counts(counts: pd.DataFrame) -> pd.DataFrame:
+    """台股多空排列家數: short-minus-long MA of (bullish count - bearish count)."""
+    c = counts.sort_index()
+    spread = c["stack_bull"] - c["stack_bear"]
     short, long = STACK_SIGNAL_MAS
     ind = spread.rolling(short).mean() - spread.rolling(long).mean()
     return _out(ind, ind > 0)
+
+
+def bull_bear_stack(prices: pd.DataFrame) -> pd.DataFrame:
+    """台股多空排列家數 straight from per-stock closes."""
+    return bull_bear_from_counts(stack_counts(prices))
 
 
 def adl(breadth: pd.DataFrame) -> pd.DataFrame:
@@ -108,21 +124,40 @@ def weekly_macd(px: pd.Series) -> pd.DataFrame:
     return _out(hist, hist > 0)
 
 
-def margin_ratio(margin_stock: pd.DataFrame, margin_total: pd.DataFrame,
-                 prices: pd.DataFrame) -> pd.DataFrame:
-    """大盤融資維持率 = value of margin-bought shares / margin loans outstanding.
-
-    Margin balances are in board lots of 1,000 shares.
-    """
+def margin_value(margin_stock: pd.DataFrame, prices: pd.DataFrame) -> pd.Series:
+    """Per day, market value of the shares bought on margin (board lots of 1,000)."""
     merged = margin_stock.merge(prices, on=["date", "code"], how="inner")
-    value = (merged["margin_lots"] * 1000 * merged["close"]).groupby(merged["date"]).sum()
-    loans = margin_total.set_index("date")["margin_balance_twd"]
-    ind = (value / loans).sort_index()
+    return (merged["margin_lots"] * 1000 * merged["close"]).groupby(merged["date"]).sum()
+
+
+def margin_ratio_from(value: pd.Series, loans: pd.Series) -> pd.DataFrame:
+    """大盤融資維持率 = value of margin-bought shares / margin loans outstanding."""
+    ind = (value / loans).dropna().sort_index()
     return _out(ind, ind < MARGIN_THRESHOLD)
 
 
-def market_pbr(pbr: pd.DataFrame, prices: pd.DataFrame, shares: pd.DataFrame,
-               tpex: pd.DataFrame | None = None) -> pd.DataFrame:
+def margin_ratio(margin_stock: pd.DataFrame, margin_total: pd.DataFrame,
+                 prices: pd.DataFrame) -> pd.DataFrame:
+    """大盤融資維持率 straight from per-stock margin balances and closes."""
+    return margin_ratio_from(margin_value(margin_stock, prices),
+                             margin_total.set_index("date")["margin_balance_twd"])
+
+
+def pbr_totals(df: pd.DataFrame) -> pd.DataFrame:
+    """Per day, total market cap, total book value and stock count for one exchange.
+
+    `df` needs date, code, close, shares and pbr. Book value per stock is backed
+    out of the exchange's published P/B.
+    """
+    df = df[(df["pbr"] > 0) & df["close"].notna() & df["shares"].notna()]
+    df = df[~df["code"].astype(str).str.startswith("0")]     # drop ETFs
+    cap = df["close"] * df["shares"]
+    g = pd.DataFrame({"date": df["date"], "cap": cap, "book": cap / df["pbr"]}).groupby("date")
+    return pd.DataFrame({"cap": g["cap"].sum(), "book": g["book"].sum(),
+                         "n": g.size().astype(float)})
+
+
+def market_pbr_from(tw: pd.DataFrame, tp: pd.DataFrame | None = None) -> pd.DataFrame:
     """大盤股價淨值比 = total market cap / total book value, 上市 + 上櫃.
 
     Book value per stock is backed out of the exchange's published P/B, then
@@ -136,41 +171,38 @@ def market_pbr(pbr: pd.DataFrame, prices: pd.DataFrame, shares: pd.DataFrame,
     is internally consistent; the signal threshold is rescaled to match rather
     than the level being forced onto FinLab's.
     """
-    def aggregate(df, label):
-        """Per-date cap and book, keeping only dates with plausible coverage."""
-        df = df[(df["pbr"] > 0) & df["close"].notna() & df["shares"].notna()]
-        df = df[~df["code"].astype(str).str.startswith("0")]     # drop ETFs
-        if not len(df):
-            return None
-        cap = (df["close"] * df["shares"]).groupby(df["date"]).sum()
-        book = ((df["close"] * df["shares"]) / df["pbr"]).groupby(df["date"]).sum()
-        n = df.groupby("date")["code"].size()
+    def keep(t, label):
         # a date that kept only a handful of stocks means an input feed has not
         # been crawled that far yet -- averaging it in would be silently wrong
-        keep = n >= 0.5 * n.median()
-        dropped = int((~keep).sum())
-        if dropped:
-            print(f"    market_pbr: dropped {dropped} {label} dates with thin coverage")
-        return cap[keep], book[keep]
+        t = t.dropna(subset=["cap", "book", "n"])
+        ok = t["n"] >= 0.5 * t["n"].median()
+        if (~ok).sum():
+            print(f"    market_pbr: dropped {int((~ok).sum())} {label} dates with thin coverage")
+        return t[ok]
 
-    tw = aggregate(pbr.merge(prices, on=["date", "code"])
-                      .merge(shares, on=["date", "code"]), "上市")
-    tp = aggregate(tpex, "上櫃") if tpex is not None and len(tpex) else None
-    if tw is None:
-        return _out(pd.Series(dtype=float), pd.Series(dtype=bool))
-    if tp is None:
-        cap, book = tw
-    else:
+    tw = keep(tw, "上市")
+    if tp is not None and len(tp):
+        tp = keep(tp, "上櫃")
         # Only dates where both exchanges are in hand: mixing full-market days
         # with 上市-only days would put a step in the series, not a signal.
-        both = tw[0].index.intersection(tp[0].index)
-        missing = len(tw[0].index) - len(both)
+        both = tw.index.intersection(tp.index)
+        missing = len(tw.index) - len(both)
         if missing:
             print(f"    market_pbr: {missing} dates have 上市 but no 上櫃 yet, held back")
-        cap, book = tw[0][both] + tp[0][both], tw[1][both] + tp[1][both]
-
+        cap = tw.loc[both, "cap"] + tp.loc[both, "cap"]
+        book = tw.loc[both, "book"] + tp.loc[both, "book"]
+    else:
+        cap, book = tw["cap"], tw["book"]
     ind = (cap / book).sort_index()
     return _out(ind, ind < PBR_THRESHOLD)
+
+
+def market_pbr(pbr: pd.DataFrame, prices: pd.DataFrame, shares: pd.DataFrame,
+               tpex: pd.DataFrame | None = None) -> pd.DataFrame:
+    """大盤股價淨值比 straight from per-stock frames (see market_pbr_from)."""
+    tw = pbr_totals(pbr.merge(prices, on=["date", "code"]).merge(shares, on=["date", "code"]))
+    tp = pbr_totals(tpex) if tpex is not None and len(tpex) else None
+    return market_pbr_from(tw, tp)
 
 
 def monthly_level(series: pd.Series, threshold: float = 50.0,

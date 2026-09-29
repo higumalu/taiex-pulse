@@ -21,6 +21,15 @@ in the repository.
 Crawls are resumable. If you stop one, stop it by PID, never by image name --
 other long-running Python processes may share the machine.
 
+## How the published site is fed
+
+The site reads only `data/store/`, a worktree of the `data` branch (daily
+aggregates as CSV, see `scripts/store.py`). CI keeps it current with
+`update_daily.py` in the `Daily update` workflow; the local parquet crawl is
+only needed to rebuild history. After a re-export, commit and push from inside
+`data/store/`. GitHub's runners reach every source (checked with
+`probe_sources.py`, 2026-09-29).
+
 ## What this is
 
 `https://ai.finlab.tw/tw_market` is shutting down. This rebuilds its dashboard
@@ -156,7 +165,10 @@ python fetch_tpex.py  --interval 3.5   # 上櫃, 3 feeds, resumable
 
 python calibrate_params.py    # recover the unpublished MA windows
 python calibrate_weights.py   # fit composite weights and cut points
-python build_site_data.py     # write site/data/market.json
+python store.py export        # parquet -> data/store (the `data` branch)
+python build_site_data.py     # data/store -> site/data/market.json
+python update_daily.py        # what CI runs: fetch recent days into data/store
+python probe_sources.py       # can this machine reach every source?
 
 cd ..\site && python -m http.server 8765 --bind 127.0.0.1
 ```

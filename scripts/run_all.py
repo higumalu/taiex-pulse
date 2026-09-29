@@ -74,6 +74,7 @@ def main():
     stamp("rebuilding site data")
     subprocess.call([sys.executable, "calibrate_params.py"], cwd=SCRIPTS)
     subprocess.call([sys.executable, "calibrate_weights.py"], cwd=SCRIPTS)
+    subprocess.call([sys.executable, "store.py", "export"], cwd=SCRIPTS)
     subprocess.call([sys.executable, "build_site_data.py"], cwd=SCRIPTS)
     stamp("done")
 

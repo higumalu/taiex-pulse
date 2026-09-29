@@ -17,7 +17,8 @@ import pandas as pd
 
 import indicators as I
 from common import ROOT
-from build_site_data import WEIGHTS, read_years
+from build_site_data import WEIGHTS
+from store import read_years
 from finlab_archive import read_archive, signal_from_ind
 
 SCALE = 10.0

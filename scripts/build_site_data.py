@@ -1,6 +1,8 @@
 """Produce site/data/market.json for the dashboard.
 
-Only series our own pipeline computes from public data are published. A series
+Reads only data/store (the `data` branch, see store.py), so it runs the same
+locally and in CI. Only series our own pipeline computes from public data are
+published. A series
 whose inputs have not been crawled far enough is left off the page rather than
 filled in from anywhere else, and the FinLab archive is never read here -- it
 lives in finlab_archive.py and is used only for calibration and validation.
@@ -12,7 +14,8 @@ import json
 import pandas as pd
 
 import indicators as I
-from common import PARQUET, ROOT, load
+import store as S
+from common import ROOT
 
 OUT = ROOT / "site" / "data" / "market.json"
 
@@ -101,66 +104,48 @@ def load_calibration():
         COLORS["大盤股價淨值比"] = [round(v * scale, 2) for v in COLORS["大盤股價淨值比"]]
 
 
-def read_years(prefix: str) -> pd.DataFrame:
-    parts = sorted(PARQUET.glob(f"{prefix}_*.parquet"))
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True) if parts \
-        else pd.DataFrame()
-
-
-def computed() -> dict[str, pd.DataFrame]:
-    """Whatever the crawled data currently supports. Missing inputs are skipped."""
+def computed() -> tuple[dict[str, pd.DataFrame], pd.Series]:
+    """Every indicator the published dataset supports. Missing inputs are skipped."""
     out = {}
-    # FMTQIK reaches back to 1990 and is the preferred source; MI_INDEX only
-    # carries the index tables from 2009 and is a fallback for recent days.
-    taiex = pd.Series(dtype=float)
-    fm = PARQUET / "twse_taiex.parquet"
-    if fm.exists():
-        t = pd.read_parquet(fm)
-        taiex = t.drop_duplicates("date").set_index("date")["close"].sort_index()
-    idx = read_years("twse_index")
-    if len(idx):
-        alt = (idx[idx["index_name"].str.contains("發行量加權股價指數", na=False)]
-               .drop_duplicates("date").set_index("date")["close"].sort_index())
-        taiex = alt.combine_first(taiex).sort_index() if len(taiex) else alt
+    taiex = S.read("taiex")
+    taiex = taiex["close"].dropna() if len(taiex) else pd.Series(dtype=float)
     if len(taiex) > MIN_POINTS:
         out["生命線指標"] = I.lifeline(taiex)
 
-    prices = read_years("twse_prices")
-    if len(prices) and prices["date"].nunique() > MIN_POINTS:
-        out["台股多空排列家數"] = I.bull_bear_stack(prices)
-        if (prices["code"] == "0050").any():
-            px = (prices[prices["code"] == "0050"].drop_duplicates("date")
-                  .set_index("date")["close"].sort_index())
-            if len(px) > MIN_POINTS:
-                out["大盤週線MACD"] = I.weekly_macd(px)
+    tw = S.read("twse_daily")
+    if len(tw):
+        stack = tw[["stack_bull", "stack_bear"]].dropna()
+        # the first max(STACK_MAS) days of the crawl have no MA order yet
+        stack = stack[stack.sum(axis=1) > 0]
+        if len(stack) > MIN_POINTS:
+            out["台股多空排列家數"] = I.bull_bear_from_counts(stack)
+        px = tw["close_0050"].dropna()
+        if len(px) > MIN_POINTS:
+            out["大盤週線MACD"] = I.weekly_macd(px)
+        breadth = tw[["up", "down", "unchanged"]].dropna(how="all")
+        if len(breadth) > MIN_POINTS:
+            out["騰落線指標(ADL)"] = I.adl(breadth.reset_index())
+        margin = tw[["margin_value", "margin_loans"]].dropna()
+        if len(margin) > MIN_POINTS:
+            out["大盤融資維持率"] = I.margin_ratio_from(margin["margin_value"],
+                                                   margin["margin_loans"])
+        tp = S.read("tpex_daily")
+        out["大盤股價淨值比"] = I.market_pbr_from(tw[S.PBR_COLS], tp if len(tp) else None)
 
-    breadth = read_years("twse_breadth")
-    if len(breadth) > MIN_POINTS:
-        out["騰落線指標(ADL)"] = I.adl(breadth)
-
-    ms, mt = read_years("twse_margin_stock"), read_years("twse_margin_total")
-    if len(ms) and len(mt) and len(prices) and mt["date"].nunique() > MIN_POINTS:
-        out["大盤融資維持率"] = I.margin_ratio(ms, mt, prices)
-
-    pbr, shares = read_years("twse_pbr"), read_years("twse_shares")
-    tq, tp = read_years("tpex_quotes"), read_years("tpex_pbr")
-    tpex = tq.merge(tp, on=["date", "code"]) if len(tq) and len(tp) else None
-    if len(pbr) and len(shares) and len(prices) and pbr["date"].nunique() > MIN_POINTS:
-        out["大盤股價淨值比"] = I.market_pbr(pbr, prices, shares, tpex)
-
-    pmi, nmi, eco = load("ndc_pmi"), load("ndc_nmi"), load("ndc_eco")
+    pmi, nmi, eco = (S.read(n, index=None) for n in ("ndc_pmi", "ndc_nmi", "ndc_eco"))
     pick = lambda df, n: df[df["name"] == n].set_index("month")["value"].sort_index()
-    out["台灣製造業採購經理人指數(PMI)"] = I.monthly_level(pick(pmi, "製造業PMI"))
-    out["台灣製造業採購經理人未來6個月展望"] = I.monthly_level(pick(pmi, "未來六個月展望"))
-    out["台灣非製造業採購經理人指數(NMI)"] = I.monthly_level(pick(nmi, "臺灣非製造業NMI"))
-    score = eco[(eco["name"] == "景氣對策信號") & eco["unit"].str.contains("分")]
-    out["台灣景氣對策燈號"] = I.business_light(score.set_index("month")["value"].sort_index())
+    if len(pmi):
+        out["台灣製造業採購經理人指數(PMI)"] = I.monthly_level(pick(pmi, "製造業PMI"))
+        out["台灣製造業採購經理人未來6個月展望"] = I.monthly_level(pick(pmi, "未來六個月展望"))
+    if len(nmi):
+        out["台灣非製造業採購經理人指數(NMI)"] = I.monthly_level(pick(nmi, "臺灣非製造業NMI"))
+    if len(eco):
+        score = eco[(eco["name"] == "景氣對策信號") & eco["unit"].fillna("").str.contains("分")]
+        out["台灣景氣對策燈號"] = I.business_light(score.set_index("month")["value"].sort_index())
 
-    try:
-        net = load("taifex_inst_net_oi").set_index("date")["net_oi_value_k"]
-        out["法人期貨部位動能"] = I.futures_momentum(net)
-    except FileNotFoundError:
-        pass
+    fut = S.read("taifex_net_oi")
+    if len(fut):
+        out["法人期貨部位動能"] = I.futures_momentum(fut["net_oi_value_k"])
     return out, taiex
 
 
@@ -171,15 +156,17 @@ def as_list(s: pd.Series, digits: int) -> list:
 def main():
     I.load_params()
     load_calibration()
+    S.check_meta()
     mine, taiex = computed()
     if taiex.empty:
-        raise SystemExit("no TAIEX series yet -- run fetch_twse_index.py first")
+        raise SystemExit("no TAIEX series in data/store -- run `python store.py export` "
+                         "or check out the data branch there")
 
     series, signals = [], {}
     for title in ORDER:
         ours = mine.get(title)
         if ours is None or len(ours["ind"].dropna()) < MIN_POINTS:
-            print(f"  skipped   {title}: not enough crawled data yet")
+            print(f"  skipped   {title}: not enough data in data/store yet")
             continue
         ind, sig = ours["ind"], ours.get("signal")
         if title in WEIGHTS and sig is not None:

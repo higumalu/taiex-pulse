@@ -15,6 +15,7 @@ crawled far enough is left off the page instead.
 ## Layout
 
 ```
+data/store/      the published daily aggregates: a checkout of the `data` branch
 data/finlab_archive/  archived FinLab Firestore documents -- validation only, not in the repo
 data/raw/        raw NDC responses
 data/cache/      crawler manifests and raw chunk cache
@@ -176,7 +177,32 @@ Red means "up" in the Taiwan convention, so green is not "good".
    so these start ~3 years later than FinLab's series.
 4. **The composite weights** are our own fit, not FinLab's (see above).
 
-## Running it
+## Daily updates and the `data` branch
+
+The site is built from `data/store/` only, a checkout of the `data` branch that
+holds one row per trading day of aggregates (counts, market cap, book value,
+margin totals, ...) as CSV, plus a rolling window of per-stock closes for
+多空排列 -- about 3 MB in all, growing by a few KB a day. See
+`scripts/store.py` for the file layout.
+
+The `Daily update` workflow runs at 21:30 Taipei on weekdays:
+`update_daily.py` fetches the new trading days (and re-fetches the last five,
+since margin and share-count reports can land late), upserts the aggregates,
+commits them to `data`, then `build_site_data.py` rebuilds the page and it is
+deployed to GitHub Pages. No per-stock history is needed in CI.
+
+To work on the site locally, check the branch out where the build expects it:
+
+```bash
+git worktree add data/store data
+cd scripts && python build_site_data.py
+```
+
+## Rebuilding from a full crawl
+
+Only needed to re-derive history, e.g. after changing an indicator's windows
+(the aggregates bake in `STACK_MAS`; `build_site_data.py` refuses to run on a
+store exported with different ones).
 
 ```bash
 cd scripts
@@ -196,10 +222,11 @@ per minute (MI_INDEX alone is ~5 MB/day and the parse dominates), so budget
 **18-24 hours**, and a few hundred MB of parquet. Use `--start`/`--end`/`--limit`
 for partial runs.
 
-Then rebuild the page:
+Then re-export the store and rebuild the page:
 
 ```bash
-python calibrate_weights.py   # fit composite weights against the archive
+python calibrate_weights.py   # fit composite weights (needs the FinLab archive)
+python store.py export        # parquet -> data/store, then commit on `data`
 python build_site_data.py     # write site/data/market.json
 cd ../site && python -m http.server 8765 --bind 127.0.0.1
 ```

@@ -1,0 +1,85 @@
+name: Daily update
+
+# After the close, fetch the new trading day(s), append the daily aggregates
+# to the `data` branch, rebuild the dashboard and publish it to GitHub Pages.
+on:
+  schedule:
+    # 21:30 Taipei: margin balances and share counts come out in the evening.
+    # Runs only from the default branch.
+    - cron: "30 13 * * 1-5"
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - scripts/**
+      - site/**
+      - data/params.json
+      - data/weights.json
+      - requirements.txt
+      - .github/workflows/daily.yml
+
+# One run at a time: two runs pushing to the data branch would conflict.
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          ref: data
+          path: data/store
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Fetch new trading days
+        working-directory: scripts
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -u update_daily.py
+
+      - name: Build dashboard data
+        working-directory: scripts
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -u build_site_data.py
+
+      - name: Commit to the data branch
+        working-directory: data/store
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no new data"
+          else
+            git commit -m "Update through $(python3 -c "import csv;print(list(csv.reader(open('twse_daily.csv')))[-1][0])")"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: update
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
