@@ -61,10 +61,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
+          # meta.json carries a run timestamp; on its own it is not new data
+          if git diff --quiet -- . ':!meta.json' && [ -z "$(git ls-files --others --exclude-standard)" ]; then
             echo "no new data"
           else
+            git add -A
             git commit -m "Update through $(python3 -c "import csv;print(list(csv.reader(open('twse_daily.csv')))[-1][0])")"
             git push
           fi
