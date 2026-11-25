@@ -88,11 +88,14 @@ def main():
     for feed in ("quotes", "pbr", "margin"):
         probe(f"TPEx {feed}", lambda f=feed: day_feed(fetch_tpex, tpex, f))
 
-    for name, (page, endpoint) in fetch_ndc.SOURCES.items():
-        def ndc(page=page, endpoint=endpoint):
-            df = fetch_ndc.to_frame(fetch_ndc.fetch(page, endpoint))
-            return len(df) > 0, f"{len(df)} rows, latest {df.iloc[:, 0].max()}"
-        probe(f"NDC {name}", ndc)
+    for dataset in sorted({ds for ds, _ in fetch_ndc.SOURCES.values()}):
+        def ndc(dataset=dataset):
+            raw = fetch_ndc.table(dataset, fetch_ndc.download(dataset))
+            frames = [fetch_ndc.to_frame(raw, cols)
+                      for ds, cols in fetch_ndc.SOURCES.values() if ds == dataset]
+            n = sum(len(f) for f in frames)
+            return n > 0, f"{n} rows, latest {max(f.month.max() for f in frames)}"
+        probe(f"NDC open data {dataset}", ndc)
 
     def taifex():
         # fetch_chunk never caches a range that reaches today, so this writes nothing.

@@ -160,14 +160,15 @@ def update_taifex(start: date, end: date):
 
 
 def update_ndc():
-    for name, (page, endpoint) in fetch_ndc.SOURCES.items():
-        try:
-            df = fetch_ndc.to_frame(fetch_ndc.fetch(page, endpoint))
-        except Exception as e:
-            warn(f"NDC {name}: {type(e).__name__}: {e}")
-            continue
+    try:
+        frames = fetch_ndc.fetch_all()
+    except Exception as e:
+        warn(f"NDC: {type(e).__name__}: {e}")
+        return
+    for name, df in frames.items():
         if len(df):
-            S.write(name, df, index=False)      # small enough to replace whole
+            # merge, not replace: the open data lacks some series the old API had
+            S.write(name, fetch_ndc.merge(S.read(name, index=None), df), index=False)
     print("NDC: refreshed", flush=True)
 
 

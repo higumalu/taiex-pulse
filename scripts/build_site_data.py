@@ -49,7 +49,7 @@ DESCRIPTIONS = {
         "上市加上櫃的總市值除以總淨值（由各股公告的股價淨值比回推）。"
         "低於門檻視為評價偏低、偏多。",
     "台灣製造業採購經理人指數(PMI)":
-        "國發會每月公布的製造業 PMI，高於 50 代表製造業擴張。"
+        "國發會每月公布的製造業 PMI（季節調整後），高於 50 代表製造業擴張。"
         "數值依公布時點（次月初）對齊，不會用到當時還沒公布的資料。",
     "台灣製造業採購經理人未來6個月展望":
         "製造業採購經理人對未來六個月景氣的看法，高於 50 代表偏樂觀。依公布時點對齊。",
@@ -135,7 +135,7 @@ def computed() -> tuple[dict[str, pd.DataFrame], pd.Series]:
     pmi, nmi, eco = (S.read(n, index=None) for n in ("ndc_pmi", "ndc_nmi", "ndc_eco"))
     pick = lambda df, n: df[df["name"] == n].set_index("month")["value"].sort_index()
     if len(pmi):
-        out["台灣製造業採購經理人指數(PMI)"] = I.monthly_level(pick(pmi, "製造業PMI"))
+        out["台灣製造業採購經理人指數(PMI)"] = I.monthly_level(pick(pmi, "製造業PMI(季調值)"))
         out["台灣製造業採購經理人未來6個月展望"] = I.monthly_level(pick(pmi, "未來六個月展望"))
     if len(nmi):
         out["台灣非製造業採購經理人指數(NMI)"] = I.monthly_level(pick(nmi, "臺灣非製造業NMI"))
