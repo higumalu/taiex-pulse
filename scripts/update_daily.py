@@ -199,7 +199,10 @@ def main():
     update_taiex(days)
     update_twse(days)
     update_tpex(days)
-    update_taifex(days[0] - timedelta(days=10), end)
+    try:
+        update_taifex(days[0] - timedelta(days=10), end)
+    except Exception as e:
+        warn(f"TAIFEX: {type(e).__name__}: {e}")
     update_ndc()
     S.write_meta(updated=pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M"))
 

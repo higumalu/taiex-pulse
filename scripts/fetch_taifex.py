@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import sys
+import time
 from datetime import date, timedelta
 
 import pandas as pd
@@ -24,12 +25,19 @@ START = date(2024, 1, 1)
 TAIEX_FUTURES = {"臺股期貨", "小型臺指期貨", "微型臺指期貨"}
 
 
-def post_range(sess, throttle, d0: date, d1: date) -> str:
-    throttle.wait()
-    r = sess.post(URL, timeout=60, data={
-        "queryType": "2", "doQuery": "1", "commodityId": "",
-        "queryStartDate": f"{d0:%Y/%m/%d}", "queryEndDate": f"{d1:%Y/%m/%d}",
-    })
+def post_range(sess, throttle, d0: date, d1: date, attempts: int = 3) -> str:
+    # TAIFEX sits behind Cloudflare and now and then answers 5xx (often 520);
+    # those are transient, so retry them before giving up.
+    for i in range(attempts):
+        throttle.wait()
+        r = sess.post(URL, timeout=60, data={
+            "queryType": "2", "doQuery": "1", "commodityId": "",
+            "queryStartDate": f"{d0:%Y/%m/%d}", "queryEndDate": f"{d1:%Y/%m/%d}",
+        })
+        if r.status_code < 500 or i == attempts - 1:
+            break
+        print(f"  TAIFEX {r.status_code}, retrying ({i + 1}/{attempts - 1})", flush=True)
+        time.sleep(10 * (i + 1))
     r.raise_for_status()
     # TAIFEX serves the export as Big5, not UTF-8
     return r.content.decode("cp950", errors="replace")
