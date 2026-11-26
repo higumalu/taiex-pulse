@@ -8,6 +8,11 @@ on:
     # Runs only from the default branch.
     - cron: "30 13 * * 1-5"
   workflow_dispatch:
+    inputs:
+      fail_test:
+        description: "Inject an error after the update, to check the failure path"
+        type: boolean
+        default: false
   push:
     branches: [dev]
     paths:
@@ -32,6 +37,8 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      built: ${{ steps.build.outcome }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/checkout@v5
@@ -44,19 +51,22 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
 
+      # Fails the job when a source raised something other than a network
+      # error, or has had trouble in 3 runs in a row (see update_daily.py).
+      # The steps below still run, so the data that did arrive is saved and
+      # published; the run stays red.
       - name: Fetch new trading days
+        id: fetch
         working-directory: scripts
         env:
           PYTHONIOENCODING: utf-8
-        run: python -u update_daily.py
+          FAIL_TEST: ${{ inputs.fail_test }}
+        run: python -u update_daily.py $([ "$FAIL_TEST" = "true" ] && echo --fail-test)
 
-      - name: Build dashboard data
-        working-directory: scripts
-        env:
-          PYTHONIOENCODING: utf-8
-        run: python -u build_site_data.py
-
+      # Before the build, so a failing build cannot cost the day's data.
+      # Every table is upserted on its own, so a partial run is consistent.
       - name: Commit to the data branch
+        if: ${{ !cancelled() && steps.fetch.outcome != 'skipped' }}
         working-directory: data/store
         run: |
           git config user.name "github-actions[bot]"
@@ -70,13 +80,25 @@ jobs:
             git push
           fi
 
+      - name: Build dashboard data
+        id: build
+        if: ${{ !cancelled() && steps.fetch.outcome != 'skipped' }}
+        working-directory: scripts
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -u build_site_data.py
+
       - uses: actions/configure-pages@v5
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       - uses: actions/upload-pages-artifact@v4
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
           path: site
 
   deploy:
     needs: update
+    # also after a failed fetch, as long as the site was built
+    if: ${{ !cancelled() && needs.update.outputs.built == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

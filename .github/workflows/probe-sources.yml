@@ -3,6 +3,10 @@ name: Probe data sources
 # Can GitHub's runners reach TWSE, TPEx, TAIFEX and NDC at all? Everything else
 # about running the daily update in CI depends on the answer.
 on:
+  # Weekly, so a source that stops answering GitHub's runners shows up as a
+  # red run even in a week when the daily update looks fine.
+  schedule:
+    - cron: "0 1 * * 1"     # Monday 09:00 Taipei
   workflow_dispatch:
   push:
     branches: [dev]

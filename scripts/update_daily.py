@@ -8,14 +8,25 @@ picked up by the next run.
 
 Never needs the full per-stock history: 多空排列 runs over the rolling window of
 closes kept in data/store, and everything else is per day.
+
+Failure handling: each source runs on its own, so one failing source never
+costs the others their data (CI commits whatever was saved, then fails the
+job if needed). A network error is a warning -- the next run retries. Any
+other exception is an error and fails the job at the end. A source with
+trouble in HEALTH_LIMIT runs in a row also fails the job, so a source that
+quietly stopped updating cannot hide behind a green run.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
+import traceback
 from datetime import date, timedelta
 
 import pandas as pd
+import requests
 
 import fetch_ndc
 import fetch_taifex
@@ -29,12 +40,87 @@ from common import Throttle, session
 REFETCH_DAYS = 5        # weekdays re-fetched even when already complete
 MAX_DAYS = 45           # catch-up cap per run; the next run continues
 ON_CI = os.environ.get("GITHUB_ACTIONS") == "true"
-problems: list[str] = []
+SOURCES = ("TAIEX", "TWSE", "TPEx", "TAIFEX", "NDC")
+HEALTH_LIMIT = 3        # runs in a row with trouble before a source fails the job
+HEALTH = S.STORE / "health.json"
+
+problems: list[tuple[str, str]] = []    # (source, message): warnings
+errors: list[tuple[str, str]] = []      # (source, message): fail the job
+_source = "general"                     # the source whose update is running
 
 
 def warn(msg: str):
-    problems.append(msg)
+    problems.append((_source, msg))
     print(f"::warning::{msg}" if ON_CI else f"WARNING {msg}", flush=True)
+
+
+def run_source(name: str, fn, *args):
+    """Run one source's update; whatever it raises stays with that source.
+
+    A network error (requests.RequestException) is a warning: the site is down
+    or slow, and the next run retries. Anything else -- a changed format, a
+    block page that parses wrong, a bug -- needs a person, so it is an error.
+    """
+    global _source
+    _source = name
+    try:
+        fn(*args)
+    except requests.RequestException as e:
+        warn(f"{name}: {type(e).__name__}: {e}")
+    except Exception as e:
+        errors.append((name, f"{type(e).__name__}: {e}"))
+        traceback.print_exc()
+        print(f"::error title={name}::{type(e).__name__}: {e}" if ON_CI
+              else f"ERROR {name}: {type(e).__name__}: {e}", flush=True)
+    finally:
+        _source = "general"
+
+
+def update_health() -> dict:
+    """Count, per source, the runs in a row that had a warning or an error.
+
+    Kept in data/store/health.json on the data branch. A healthy source is
+    stored as just {"failing_runs": 0}, so a clean run leaves the file as it was.
+    """
+    try:
+        health = json.loads(HEALTH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        health = {}
+    now = pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M")
+    for src in SOURCES:
+        msgs = [m for s, m in errors + problems if s == src]
+        if msgs:
+            h = health.get(src) or {}
+            health[src] = {"failing_runs": h.get("failing_runs", 0) + 1,
+                           "since": h.get("since") or now,
+                           "last_problem": msgs[0][:300]}
+        else:
+            health[src] = {"failing_runs": 0}
+    HEALTH.write_text(json.dumps(health, indent=2, ensure_ascii=False) + "\n",
+                      encoding="utf-8")
+    return health
+
+
+def report(health: dict):
+    """Print the run's outcome per source; on CI also as the job summary."""
+    lines = ["| source | this run | runs in a row with trouble | first problem |",
+             "| --- | --- | --- | --- |"]
+    for src in SOURCES:
+        err = [m for s, m in errors if s == src]
+        warns = [m for s, m in problems if s == src]
+        state = ("❌ error" if err else f"⚠️ {len(warns)} warning(s)" if warns else "✅ ok")
+        n = health[src]["failing_runs"]
+        flag = f"**{n}** (limit {HEALTH_LIMIT})" if n >= HEALTH_LIMIT else str(n)
+        first = (err + warns)[0].replace("|", "/")[:200] if err or warns else ""
+        lines.append(f"| {src} | {state} | {flag} | {first} |")
+    other = [f"{s}: {m}" for s, m in errors + problems if s not in SOURCES]
+    if other:
+        lines += ["", "Other:"] + [f"- {m}" for m in other]
+    text = "\n".join(lines) + "\n"
+    print(text, flush=True)
+    if ON_CI and os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write("### Daily update: sources\n\n" + text)
 
 
 def weekdays(start: date, end: date) -> list[date]:
@@ -160,11 +246,7 @@ def update_taifex(start: date, end: date):
 
 
 def update_ndc():
-    try:
-        frames = fetch_ndc.fetch_all()
-    except Exception as e:
-        warn(f"NDC: {type(e).__name__}: {e}")
-        return
+    frames = fetch_ndc.fetch_all()
     for name, df in frames.items():
         if len(df):
             # merge, not replace: the open data lacks some series the old API had
@@ -175,6 +257,9 @@ def update_ndc():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--end", default=None, help="last day to fetch (default today)")
+    ap.add_argument("--fail-test", action="store_true",
+                    help="inject an error after the real update, to check that CI still "
+                         "saves the data, deploys the site and then fails the run")
     args = ap.parse_args()
 
     I.load_params()
@@ -197,20 +282,33 @@ def main():
     print(f"last complete day {last}; fetching {len(days)} weekdays "
           f"{days[0]} .. {days[-1]}", flush=True)
 
-    update_taiex(days)
-    update_twse(days)
-    update_tpex(days)
-    try:
-        update_taifex(days[0] - timedelta(days=10), end)
-    except Exception as e:
-        warn(f"TAIFEX: {type(e).__name__}: {e}")
-    update_ndc()
+    run_source("TAIEX", update_taiex, days)
+    run_source("TWSE", update_twse, days)
+    run_source("TPEx", update_tpex, days)
+    run_source("TAIFEX", update_taifex, days[0] - timedelta(days=10), end)
+    run_source("NDC", update_ndc)
+    if args.fail_test:
+        def injected():
+            raise RuntimeError("injected by --fail-test")
+        run_source("fail-test", injected)
     S.write_meta(updated=pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M"))
 
     tw = S.read("twse_daily")
     print(f"done; twse_daily now ends {tw.index[-1]}, last complete "
-          f"{last_complete(tw)}; {len(problems)} warnings", flush=True)
+          f"{last_complete(tw)}; {len(problems)} warnings, {len(errors)} errors", flush=True)
+
+    health = update_health()
+    report(health)
+    stale = [s for s in SOURCES if health[s]["failing_runs"] >= HEALTH_LIMIT]
+    if errors or stale:
+        why = ([f"{s}: {m}" for s, m in errors]
+               + [f"{s}: trouble in {health[s]['failing_runs']} runs in a row "
+                  f"since {health[s]['since']}" for s in stale])
+        print(f"::error title=Daily update failed::{'; '.join(why)}" if ON_CI
+              else "FAILED: " + "; ".join(why), flush=True)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -91,6 +91,15 @@ FinLab 的原始公式**無法從公開資料還原**。量測封存資料裡「
 3. `build_site_data.py` 重建 `site/data/market.json`。
 4. 部署到 GitHub Pages。
 
+### 出錯時的處理
+
+- 五個來源（TAIEX、TWSE、TPEx、TAIFEX、NDC）各自執行，一個出錯不會影響其他來源。
+- 網路錯誤（連不上、逾時、5xx）只記成警告，下一次 run 會重抓。其他例外（格式改了、被擋的頁面解析失敗、程式錯誤）記成錯誤，會讓這次 run 變紅。
+- 同一個來源連續 3 次 run 都有警告或錯誤，也會讓 run 變紅。次數記在 `data` branch 的 `health.json`，每次 run 的 Summary 頁面會列出各來源的狀態。
+- 抓取失敗時，已經抓到的資料照樣 commit、網站照樣重建部署，只是 run 會是紅的。Commit 排在 build 前面，所以 build 失敗也不會丟掉當天的資料。
+- 要驗證這條路徑：手動觸發 `Daily update` 並勾選 `fail_test`，它會在正常更新之後注入一個錯誤。
+- `Probe data sources` 每週一 09:00（台北時間）自動跑一次，任何來源連不到就會變紅。
+
 CI 不需要逐股的完整歷史。多空排列只要窗口內的收盤價就能算，結果已驗證和用完整歷史算的逐格相同。
 
 ### 在本機跑網站
