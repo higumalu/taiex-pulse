@@ -1,0 +1,17 @@
+{
+  "TAIEX": {
+    "failing_runs": 0
+  },
+  "TWSE": {
+    "failing_runs": 0
+  },
+  "TPEx": {
+    "failing_runs": 0
+  },
+  "TAIFEX": {
+    "failing_runs": 0
+  },
+  "NDC": {
+    "failing_runs": 0
+  }
+}
